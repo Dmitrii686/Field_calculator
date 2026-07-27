@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+.DS_Store
+history/
+launcher.py
+main.py
+app.py
