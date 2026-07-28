@@ -1,152 +1,94 @@
-"""Экспорт сметы в PDF через reportlab."""
+"""Экспорт сметы в PDF через fpdf2."""
 
 import os
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-)
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF
 
 from models import Calculation, ROLES
 
 
-try:
-    pdfmetrics.registerFont(TTFont("DejaVu", "DejaVuSans.ttf"))
-    FONT_NAME = "DejaVu"
-    FONT_BOLD = "DejaVu-Bold"
-except Exception:
-    FONT_NAME = "Helvetica"
-    FONT_BOLD = "Helvetica-Bold"
+class CalcPDF(FPDF):
+    def __init__(self):
+        super().__init__("P", "mm", "A4")
+        font_dir = os.path.dirname(os.path.abspath(__file__))
+        self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
+        self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
+        self.add_page()
+        self.set_auto_page_break(auto=False)
 
 
 def _rub(value) -> str:
-    return f"{value:,.2f} ₽".replace(",", " ")
-
-
-def _footer(canvas, doc, calculated_by: str):
-    canvas.saveState()
-    canvas.setFont(FONT_NAME, 8)
-    canvas.drawRightString(
-        A4[0] - 20 * mm, 12 * mm,
-        f"Расчет выполнил: {calculated_by}"
-    )
-    canvas.restoreState()
+    return f"{value:,.2f} руб.".replace(",", " ")
 
 
 def export_calculation_to_pdf(calc: Calculation, filepath: str) -> str:
-    doc = SimpleDocTemplate(
-        filepath,
-        pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
-        topMargin=20 * mm,
-        bottomMargin=22 * mm,
-    )
+    pdf = CalcPDF()
 
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "CustomTitle", parent=styles["Title"],
-        fontName=FONT_BOLD, fontSize=18,
-        textColor=HexColor("#1A478A"), alignment=TA_CENTER,
-        spaceAfter=2 * mm,
-    )
-    sub_style = ParagraphStyle(
-        "Sub", parent=styles["Normal"],
-        fontName=FONT_NAME, fontSize=12, alignment=TA_CENTER,
-        spaceAfter=6 * mm,
-    )
-    right_style = ParagraphStyle(
-        "Right", parent=styles["Normal"],
-        fontName=FONT_NAME, fontSize=10, alignment=TA_RIGHT,
-    )
-    normal = ParagraphStyle(
-        "NC", parent=styles["Normal"],
-        fontName=FONT_NAME, fontSize=10,
-    )
+    pdf.set_font("DejaVu", "B", 16)
+    pdf.cell(0, 10, "РАСЧЕТ СТОИМОСТИ ВЫЕЗДНЫХ РАБОТ", align="C")
+    pdf.ln(10)
 
-    story = []
-    story.append(Paragraph("РАСЧЕТ СТОИМОСТИ ВЫЕЗДНЫХ РАБОТ", title_style))
-    story.append(Paragraph(f"({calc.work_type})" if calc.work_type else "(поверка, калибровка, испытания)", sub_style))
-    story.append(Paragraph(f"Дата: {calc.formatted_date()}", right_style))
-    story.append(Paragraph(f"Сотрудник: {calc.role}", right_style))
+    pdf.set_font("DejaVu", "", 11)
+    title_text = calc.work_type if calc.work_type else "поверка, калибровка, испытания"
+    pdf.cell(0, 6, f"({title_text})", align="C")
+    pdf.ln(10)
+
+    pdf.set_font("DejaVu", "", 9)
+    pdf.cell(0, 5, f"Дата: {calc.formatted_date()}", align="R")
+    pdf.ln(5)
+    pdf.cell(0, 5, f"Сотрудник: {calc.role}", align="R")
+    pdf.ln(5)
     if calc.customer:
-        story.append(Paragraph(f"Заказчик: {calc.customer}", right_style))
+        pdf.cell(0, 5, f"Заказчик: {calc.customer}", align="R")
+        pdf.ln(5)
     if calc.work_location:
-        story.append(Paragraph(f"Место проведения: {calc.work_location}", right_style))
+        pdf.cell(0, 5, f"Место проведения: {calc.work_location}", align="R")
+        pdf.ln(5)
     if calc.contract_number:
-        story.append(Paragraph(f"Номер КП (договора): {calc.contract_number}", right_style))
+        pdf.cell(0, 5, f"Номер КП (договора): {calc.contract_number}", align="R")
+        pdf.ln(5)
     if calc.instrument_name:
-        story.append(Paragraph(f"СИ: {calc.instrument_name}", right_style))
-    story.append(Spacer(1, 6 * mm))
+        pdf.cell(0, 5, f"СИ: {calc.instrument_name}", align="R")
+        pdf.ln(5)
+    pdf.ln(5)
 
-    role_rates = ROLES[calc.role]
-    table_data = [
-        ["Наименование", "Параметр", "Стоимость", "Сумма"],
-    ]
+    col_w = [75, 35, 35, 40]
+    headers = ["Наименование", "Параметр", "Стоимость", "Сумма"]
 
-    table_data.append([
-        Paragraph("Командировочные", normal),
-        Paragraph(f"{calc.total_days} дн.", normal),
-        "",
-        Paragraph(_rub(calc.daily_cost), normal),
-    ])
-    table_data.append([
-        Paragraph("Суточные", normal),
-        Paragraph(f"{calc.total_days} дн.", normal),
-        "",
-        Paragraph(_rub(calc.daily_allowance_total), normal),
-    ])
-    table_data.append([
-        Paragraph("Проезд", normal), "", "", Paragraph(_rub(calc.travel_cost), normal),
-    ])
-    table_data.append([
-        Paragraph("Проведение работ", normal), "", "", Paragraph(_rub(calc.work_cost), normal),
-    ])
+    pdf.set_font("DejaVu", "B", 10)
+    pdf.set_fill_color(0x1A, 0x47, 0x8A)
+    pdf.set_text_color(255, 255, 255)
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 8, h, border=1, fill=True, align="C")
+    pdf.ln()
+
+    pdf.set_font("DejaVu", "", 10)
+    pdf.set_text_color(0, 0, 0)
+
+    def row(name, param, price, total, bold=False):
+        if bold:
+            pdf.set_font("DejaVu", "B", 10)
+            pdf.set_fill_color(0xE8, 0xEE, 0xF7)
+        else:
+            pdf.set_font("DejaVu", "", 10)
+        pdf.cell(col_w[0], 8, name, border=1, fill=bold, align="L")
+        pdf.cell(col_w[1], 8, param, border=1, fill=bold, align="C")
+        pdf.cell(col_w[2], 8, price, border=1, fill=bold, align="C")
+        pdf.cell(col_w[3], 8, total, border=1, fill=bold, align="R")
+        pdf.ln()
+
+    row("Командировочные", f"{calc.total_days} дн.", "", _rub(calc.daily_cost))
+    row("Суточные", f"{calc.total_days} дн.", "", _rub(calc.daily_allowance_total))
+    row("Проезд", "", "", _rub(calc.travel_cost))
+    row("Проведение работ", "", "", _rub(calc.work_cost))
     if calc.hotel_nights > 0:
-        table_data.append([
-            Paragraph("Проживание", normal),
-            Paragraph(f"{calc.hotel_nights} ноч.", normal),
-            "",
-            Paragraph(_rub(calc.hotel_total), normal),
-        ])
-    table_data.append([
-        Paragraph("Дней на работы", normal),
-        Paragraph(str(calc.work_days), normal),
-        Paragraph("(информационно)", normal),
-        Paragraph("—", normal),
-    ])
-    table_data.append([
-        Paragraph("<b>ИТОГО</b>", normal), "", "",
-        Paragraph(f"<b>{_rub(calc.total)}</b>", normal),
-    ])
+        row("Проживание", f"{calc.hotel_nights} ноч.", "", _rub(calc.hotel_total))
+    row("Дней на работы", str(calc.work_days), "(информационно)", "—")
+    row("ИТОГО", "", "", _rub(calc.total), bold=True)
 
-    col_widths = [doc.width * 0.35, doc.width * 0.25, doc.width * 0.20, doc.width * 0.20]
-    table = Table(table_data, colWidths=col_widths, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#1A478A")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), white),
-        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
-        ("FONTSIZE", (0, 0), (-1, 0), 11),
-        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-        ("BACKGROUND", (0, -1), (-1, -1), HexColor("#E8EEF7")),
-        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#CCCCCC")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    story.append(table)
-    story.append(Spacer(1, 10 * mm))
-
-    def on_page(canvas, doc_obj):
-        _footer(canvas, doc_obj, calc.calculated_by)
+    pdf.ln(8)
+    pdf.set_font("DejaVu", "", 8)
+    pdf.cell(0, 5, f"Расчет выполнил: {calc.calculated_by}", align="R")
 
     os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
-    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    pdf.output(filepath)
     return filepath
